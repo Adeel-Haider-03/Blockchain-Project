@@ -1,0 +1,167 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract MiniROSCA {
+    // State variables
+    address public owner;
+    uint256 public constant MONTHLY_CONTRIBUTION = 1 ether;
+    uint256 public constant GROUP_SIZE = 5;
+    uint256 public currentCycle = 0;
+    uint256 public currentMonth = 0;
+    
+    // Member management
+    address[GROUP_SIZE] public members;
+    mapping(address => bool) public isMember;
+    mapping(address => uint256) public memberIndex;
+    uint256 public memberCount = 0;
+    
+    // Payment tracking
+    mapping(uint256 => mapping(address => bool)) public hasPaid;
+    mapping(uint256 => uint256) public totalPaidInCycle;
+    mapping(uint256 => address) public cycleRecipient;
+    mapping(uint256 => bool) public cycleCompleted;
+    
+    // Events
+    event MemberRegistered(address member, uint256 index);
+    event PaymentMade(address member, uint256 cycle, uint256 amount);
+    event PayoutDistributed(address recipient, uint256 cycle, uint256 amount);
+    event NewCycleStarted(uint256 cycle, address recipient);
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+    
+    modifier onlyMembers() {
+        require(isMember[msg.sender], "Only members can call this function");
+        _;
+    }
+    
+    modifier groupNotFull() {
+        require(memberCount < GROUP_SIZE, "Group is already full");
+        _;
+    }
+    
+    modifier groupFull() {
+        require(memberCount == GROUP_SIZE, "Group is not full yet");
+        _;
+    }
+    
+    constructor() {
+        owner = msg.sender;
+    }
+    
+    // Register members (only owner can add members)
+    function registerMember(address _member) external onlyOwner groupNotFull {
+        require(!isMember[_member], "Address is already a member");
+        require(_member != address(0), "Invalid address");
+        
+        members[memberCount] = _member;
+        isMember[_member] = true;
+        memberIndex[_member] = memberCount;
+        memberCount++;
+        
+        emit MemberRegistered(_member, memberCount - 1);
+        
+        // Start first cycle when group is full
+        if (memberCount == GROUP_SIZE) {
+            startNewCycle();
+        }
+    }
+    
+    // Start a new cycle
+    function startNewCycle() internal {
+        cycleRecipient[currentCycle] = members[currentCycle % GROUP_SIZE];
+        emit NewCycleStarted(currentCycle, cycleRecipient[currentCycle]);
+    }
+    
+    // Make monthly payment
+    function makePayment() external payable onlyMembers groupFull {
+        require(msg.value == MONTHLY_CONTRIBUTION, "Must pay exactly 1 ETH");
+        require(!hasPaid[currentCycle][msg.sender], "Already paid for this cycle");
+        require(!cycleCompleted[currentCycle], "Current cycle is already completed");
+        
+        hasPaid[currentCycle][msg.sender] = true;
+        totalPaidInCycle[currentCycle] += msg.value;
+        
+        emit PaymentMade(msg.sender, currentCycle, msg.value);
+        
+        // Check if all members have paid
+        if (totalPaidInCycle[currentCycle] == GROUP_SIZE * MONTHLY_CONTRIBUTION) {
+            distributePayout();
+        }
+    }
+    
+    // Distribute payout to designated recipient
+    function distributePayout() internal {
+        require(!cycleCompleted[currentCycle], "Cycle already completed");
+        
+        address recipient = cycleRecipient[currentCycle];
+        uint256 amount = totalPaidInCycle[currentCycle];
+        
+        cycleCompleted[currentCycle] = true;
+        
+        // Transfer funds to recipient
+        payable(recipient).transfer(amount);
+        
+        emit PayoutDistributed(recipient, currentCycle, amount);
+        
+        // Move to next cycle if not the last one
+        if (currentCycle < GROUP_SIZE - 1) {
+            currentCycle++;
+            startNewCycle();
+        }
+    }
+    
+    // View functions
+    function getCurrentRecipient() external view returns (address) {
+        if (currentCycle < GROUP_SIZE) {
+            return cycleRecipient[currentCycle];
+        }
+        return address(0);
+    }
+    
+    function getPaymentStatus(address member) external view returns (bool) {
+        return hasPaid[currentCycle][member];
+    }
+    
+    function getCurrentCycleInfo() external view returns (
+        uint256 cycle,
+        address recipient,
+        uint256 totalPaid,
+        bool completed
+    ) {
+        return (
+            currentCycle,
+            currentCycle < GROUP_SIZE ? cycleRecipient[currentCycle] : address(0),
+            totalPaidInCycle[currentCycle],
+            cycleCompleted[currentCycle]
+        );
+    }
+    
+    function getAllMembers() external view returns (address[GROUP_SIZE] memory) {
+        return members;
+    }
+    
+    function getMemberPaymentStatus() external view returns (bool[GROUP_SIZE] memory) {
+        bool[GROUP_SIZE] memory status;
+        for (uint i = 0; i < GROUP_SIZE; i++) {
+            status[i] = hasPaid[currentCycle][members[i]];
+        }
+        return status;
+    }
+    
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+    
+    // Emergency functions (only owner)
+    function emergencyWithdraw() external onlyOwner {
+        payable(owner).transfer(address(this).balance);
+    }
+    
+    // Check if ROSCA is complete
+    function isROSCAComplete() external view returns (bool) {
+        return currentCycle >= GROUP_SIZE;
+    }
+}
